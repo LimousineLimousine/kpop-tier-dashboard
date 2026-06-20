@@ -12,7 +12,6 @@ def parse_korean_number(val, is_rank=False):
     val_str = str(val).strip()
     if pd.isna(val) or val_str == "" or val_str in ["XXX", "???", "-"]: return 9999 if is_rank else 0 
     
-    # 🌟 [수정] "1000위 밖", "권밖" 등 '밖'이 들어가면 숫자를 추출하지 않고 즉시 0점(9999등) 처리
     if "밖" in val_str: return 9999 if is_rank else 0
     
     clean_str = val_str.replace('1주차', '').replace('2주차', '').replace('3주차', '').replace('집계중', '').replace('(', '').replace(')', '')
@@ -50,7 +49,8 @@ def get_metrics(row, df_columns):
     return raw_dig, raw_alb, raw_mv, raw_spt, d_rank, a_sales, m_views, s_listens
 
 # --- 2. 점수 및 티어 산출 ---
-def get_idol_tier(category, digital_rank, album_sales, mv_views, spotify_listeners, raw_album_val):
+# 🌟 변경: 활동상태(status) 변수를 추가로 받아 활동 종료/해체 여부를 체크합니다.
+def get_idol_tier(category, digital_rank, album_sales, mv_views, spotify_listeners, raw_album_val, status="활동중"):
     unified_criteria = {
         "음원순위": [(10, 100), (30, 90), (60, 80), (100, 70), (150, 60), (250, 50), (400, 40), (600, 25), (1000, 15)], 
         "초동음반": [(2000000, 100), (1000000, 90), (500000, 80), (300000, 70), (200000, 60), (100000, 50), (50000, 40), (25000, 25), (10000, 15)], 
@@ -63,11 +63,22 @@ def get_idol_tier(category, digital_rank, album_sales, mv_views, spotify_listene
     score_spotify = next((s for t, s in unified_criteria["스포티파이"] if spotify_listeners >= t), 0)
     
     album_val_str = str(raw_album_val).strip()
-    if album_val_str == "XXX": avg = (score_digital + score_mv + score_spotify) / 3; msg = "피지컬 앨범 X"
-    elif album_val_str == "???": avg = (score_digital + score_mv + score_spotify) / 3; msg = "데이터 수집 실패"
+    is_ended = status in ['활동 종료', '해체']
+    
+    # 🌟 변경: 활동 종료 그룹은 스포티파이(score_spotify)를 제외하고 분모를 1씩 줄여서 평균을 냅니다.
+    if album_val_str == "XXX": 
+        if is_ended: avg = (score_digital + score_mv) / 2
+        else: avg = (score_digital + score_mv + score_spotify) / 3
+        msg = "피지컬 앨범 X"
+    elif album_val_str == "???": 
+        if is_ended: avg = (score_digital + score_mv) / 2
+        else: avg = (score_digital + score_mv + score_spotify) / 3
+        msg = "데이터 수집 실패"
     else:
         score_album = next((s for t, s in unified_criteria["초동음반"] if album_sales >= t), 0)
-        avg = (score_digital + score_album + score_mv + score_spotify) / 4; msg = "-"
+        if is_ended: avg = (score_digital + score_album + score_mv) / 3
+        else: avg = (score_digital + score_album + score_mv + score_spotify) / 4
+        msg = "-"
 
     if avg >= 90: tier_display = "👑 S"
     elif avg >= 65: tier_display = "🔴 A"
@@ -93,8 +104,8 @@ def build_history_map(df, category):
         grp = str(row[group_col]).strip()
         s_name = str(row.get('곡명', '-')).strip()
         r_dig, r_alb, r_mv, r_spt, d_rank, a_sales, m_views, s_listens = get_metrics(row, df.columns)
-        score, tier, _ = get_idol_tier(category, d_rank, a_sales, m_views, s_listens, r_alb)
         status = str(row.get('활동상태', '활동중')).strip()
+        score, tier, _ = get_idol_tier(category, d_rank, a_sales, m_views, s_listens, r_alb, status)
         
         if status not in ['활동 종료', '해체']: main_for_rank.append({'grp': grp, 'score': score})
         history[grp] = {'score': score, 'tier': tier, 'd_rank': d_rank, 'a_sales': a_sales, 'm_views': m_views, 's_listens': s_listens, 'raw_album': r_alb, 'rank': 9999, 'song_name': s_name}
@@ -255,12 +266,10 @@ if st.session_state['curr_df'][current_category] is not None:
         is_new_group = group_name not in past_history_map
         past_record = past_history_map.get(group_name, None)
         
-        avg_score, tier, note_msg = get_idol_tier(current_category, d_rank, a_sales, m_views, s_listens, raw_alb)
+        avg_score, tier, note_msg = get_idol_tier(current_category, d_rank, a_sales, m_views, s_listens, raw_alb, status)
 
-        # 🌟 대화형 테이블 정렬을 위한 공백 정밀 패딩 함수 (Right-alignment)
         def pad_metric(val_str, max_len=12):
             v = str(val_str).strip()
-            # 예외 문자열은 패딩을 주지 않고 문자열 자체 특성상 정렬 시 무조건 뒤로 밀리게 세팅
             if any(ex in v for ex in ["권밖", "XXX", "???", "-", "nan", "None"]):
                 return v
             return v.rjust(max_len)
@@ -276,7 +285,6 @@ if st.session_state['curr_df'][current_category] is not None:
                 score_key: round(score, 1),
                 tier_key: t_disp,
                 "비고": note,
-                # 🌟 모든 테이블 내부 저장 문자열에 균일 길이의 공백 시스템 정렬 패딩을 주입
                 "음원순위 (멜론 일간 최고)": pad_metric(dr_disp, 8),
                 "초동 (장)": pad_metric(al_disp, 15),
                 "뮤비조회수 (유튜브)": pad_metric(mv_disp, 18),
@@ -290,7 +298,6 @@ if st.session_state['curr_df'][current_category] is not None:
             
             return res
 
-        # 🌟 표 1: 메인 티어표용 분배
         if status not in ['활동 종료', '해체']:
             if is_in_progress:
                 if past_record is not None:
@@ -304,13 +311,11 @@ if st.session_state['curr_df'][current_category] is not None:
                 al_d = "XXX" if "XXX" in str(raw_alb) else "???" if "???" in str(raw_alb) else f"{a_sales:,}장{tag_alb}"
                 main_tier_list.append(build_row_dict(display_group_name, song_name, avg_score, tier, note_msg, dr_d, al_d, f"{m_views:,}회{tag_mv}", f"{s_listens:,}", d_rank, a_sales, m_views, s_listens, past_record))
 
-        # 🌟 표 3: 활동 종료 및 해체 분배 (솔로 카테고리 자동 노출 차단)
         elif status in ['활동 종료', '해체']:
             dr_d = f"{d_rank}위{tag_dig}" if d_rank != 9999 else "권밖"
             al_d = f"{a_sales:,}장{tag_alb}"
             ended_list.append(build_row_dict(group_name, song_name, avg_score, tier, note_msg, dr_d, al_d, f"{m_views:,}회{tag_mv}", f"{s_listens:,}", d_rank, a_sales, m_views, s_listens))
 
-        # 🌟 표 2: 컴백 활동 중 분배
         if is_in_progress:
             c_score, c_tier, c_dr, c_al, c_mv, c_sp = avg_score, tier, d_rank, a_sales, m_views, s_listens
             borrow_msg = ""
@@ -319,7 +324,7 @@ if st.session_state['curr_df'][current_category] is not None:
                 if c_al == 0: c_al = past_record['a_sales']; raw_alb = past_record['raw_album']; borrow_msg = "예상치 반영"
                 if c_mv == 0: c_mv = past_record['m_views']; borrow_msg = "예상치 반영"
                 if c_sp == 0: c_sp = past_record['s_listens']; borrow_msg = "예상치 반영"
-                c_score, c_tier, _ = get_idol_tier(current_category, c_dr, c_al, c_mv, c_sp, raw_alb)
+                c_score, c_tier, _ = get_idol_tier(current_category, c_dr, c_al, c_mv, c_sp, raw_alb, status)
             
             dr_d = f"{c_dr}위{tag_dig}" if c_dr != 9999 else f"권밖{tag_dig}"
             al_d = "XXX" if "XXX" in str(raw_alb) else "???" if "???" in str(raw_alb) else f"{c_al:,}장{tag_alb}"
@@ -362,11 +367,13 @@ if st.session_state['curr_df'][current_category] is not None:
     if is_solo:
         tier_cols = ["순위", "순위 변동", name_key, "곡명", "종합 점수", "최종 티어", "비고", "소속 그룹", "음원순위 (멜론 일간 최고)", "초동 (장)", "뮤비조회수 (유튜브)", "스포티파이 (만명)"]
         cb_cols = [name_key, "곡명", "예상 종합 점수", "예상 최종 티어", "비고", "소속 그룹", "음원순위 (멜론 일간 최고)", "초동 (장)", "뮤비조회수 (유튜브)", "스포티파이 (만명)"]
-        ed_cols = [name_key, "곡명", "종합 점수", "최종 티어", "비고", "소속 그룹", "음원순위 (멜론 일간 최고)", "초동 (장)", "뮤비조회수 (유튜브)", "스포티파이 (만명)"]
+        # 🌟 변경: 솔로 - 해체 표에서 스포티파이 칼럼 완전 제거
+        ed_cols = [name_key, "곡명", "종합 점수", "최종 티어", "비고", "소속 그룹", "음원순위 (멜론 일간 최고)", "초동 (장)", "뮤비조회수 (유튜브)"]
     else:
         tier_cols = ["순위", "순위 변동", name_key, "곡명", "종합 점수", "최종 티어", "비고", "소속사", "데뷔년도", "음원순위 (멜론 일간 최고)", "초동 (장)", "뮤비조회수 (유튜브)", "스포티파이 (만명)"]
         cb_cols = [name_key, "곡명", "예상 종합 점수", "예상 최종 티어", "비고", "소속사", "데뷔년도", "음원순위 (멜론 일간 최고)", "초동 (장)", "뮤비조회수 (유튜브)", "스포티파이 (만명)"]
-        ed_cols = [name_key, "곡명", "종합 점수", "최종 티어", "비고", "소속사", "데뷔년도", "음원순위 (멜론 일간 최고)", "초동 (장)", "뮤비조회수 (유튜브)", "스포티파이 (만명)"]
+        # 🌟 변경: 그룹 - 해체 표에서 스포티파이 칼럼 완전 제거
+        ed_cols = [name_key, "곡명", "종합 점수", "최종 티어", "비고", "소속사", "데뷔년도", "음원순위 (멜론 일간 최고)", "초동 (장)", "뮤비조회수 (유튜브)"]
 
     # --- 🌟 표 1 : 메인 티어표 ---
     st.markdown(f"### 🔥 {current_category} 티어표 <span style='font-size:0.5em; color:gray'>({today_str} 업데이트)</span>", unsafe_allow_html=True)
