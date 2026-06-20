@@ -63,7 +63,7 @@ def get_idol_tier(category, digital_rank, album_sales, mv_views, spotify_listene
     score_spotify = next((s for t, s in unified_criteria["스포티파이"] if spotify_listeners >= t), 0)
     
     album_val_str = str(raw_album_val).strip()
-    if album_val_str == "XXX": avg = (score_digital + score_mv + score_spotify) / 3; msg = "피지컬 앨넌 X"
+    if album_val_str == "XXX": avg = (score_digital + score_mv + score_spotify) / 3; msg = "피지컬 앨범 X"
     elif album_val_str == "???": avg = (score_digital + score_mv + score_spotify) / 3; msg = "데이터 수집 실패"
     else:
         score_album = next((s for t, s in unified_criteria["초동음반"] if album_sales >= t), 0)
